@@ -659,7 +659,8 @@ class Estimator(object):
       assets_extra=None,
       as_text=False,
       checkpoint_path=None,
-      experimental_mode=ModeKeys.PREDICT):
+      experimental_mode=ModeKeys.PREDICT,
+      save_incr_model=False):
     # pylint: disable=line-too-long
     """Exports inference graph as a `SavedModel` into the given dir.
 
@@ -732,13 +733,15 @@ class Estimator(object):
         assets_extra=assets_extra,
         as_text=as_text,
         checkpoint_path=checkpoint_path,
-        strip_default_attrs=True)
+        strip_default_attrs=True,
+        save_incr_model=save_incr_model)
 
   def experimental_export_all_saved_models(
       self, export_dir_base, input_receiver_fn_map,
       assets_extra=None,
       as_text=False,
-      checkpoint_path=None):
+      checkpoint_path=None,
+      save_incr_model=False):
     """Exports a `SavedModel` with `tf.MetaGraphDefs` for each requested mode.
 
     For each mode passed in via the `input_receiver_fn_map`,
@@ -806,12 +809,13 @@ class Estimator(object):
     return self._export_all_saved_models(
         export_dir_base, input_receiver_fn_map,
         assets_extra=assets_extra, as_text=as_text,
-        checkpoint_path=checkpoint_path, strip_default_attrs=True)
+        checkpoint_path=checkpoint_path, strip_default_attrs=True,
+        save_incr_model=save_incr_model)
 
   def _export_all_saved_models(
       self, export_dir_base, input_receiver_fn_map,
       assets_extra=None, as_text=False, checkpoint_path=None,
-      strip_default_attrs=True):
+      strip_default_attrs=True, save_incr_model=False):
     """Exports multiple modes in the model function to a SavedModel."""
     # TODO(b/65561022): Consider allowing multiple input_receiver_fns per mode.
     with context.graph_mode():
@@ -832,7 +836,7 @@ class Estimator(object):
       export_dir = export_lib.get_timestamped_export_dir(export_dir_base)
       temp_export_dir = export_lib.get_temp_export_dir(export_dir)
 
-      builder = saved_model_builder.SavedModelBuilder(temp_export_dir)
+      builder = saved_model_builder.SavedModelBuilder(temp_export_dir, save_incr_model)
 
       save_variables = True
       # Note that the order in which we run here matters, as the first
@@ -1646,7 +1650,8 @@ class Estimator(object):
       assets_extra=None,
       as_text=False,
       checkpoint_path=None,
-      strip_default_attrs=False):
+      strip_default_attrs=False,
+      save_incr_model=False):
     # pylint: disable=line-too-long
     """Exports inference graph as a `SavedModel` into the given dir.
 
@@ -1715,7 +1720,8 @@ class Estimator(object):
         assets_extra=assets_extra,
         as_text=as_text,
         checkpoint_path=checkpoint_path,
-        strip_default_attrs=strip_default_attrs)
+        strip_default_attrs=strip_default_attrs,
+        save_incr_model=save_incr_model)
 
 
 @estimator_export('estimator.Estimator', v1=[])  # pylint: disable=missing-docstring
