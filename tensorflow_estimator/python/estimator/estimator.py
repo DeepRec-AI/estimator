@@ -520,7 +520,176 @@ class Estimator(object):
             return _evaluate()
         else:
           return _evaluate()
+  def evaluate_without_train_build_graph(self,
+                   features=None,
+                   labels=None,
+                   input_hooks=None,
+                   steps=None,
+                   hooks=None,
+                   checkpoint_path=None,
+                   name=None):
+    _estimator_api_gauge.get_cell('evaluate').set(True)
+    with context.graph_mode():
+      hooks = _check_hooks_type(hooks)
+      hooks.extend(self._convert_eval_steps_to_hooks(steps))
+      with tf.Graph().as_default():
+        tf.compat.v1.random.set_random_seed(self._config.tf_random_seed)
+        self._create_and_assert_global_step(tf.compat.v1.get_default_graph())
+        # features, labels, input_hooks = self._get_features_and_labels_from_input_fn(
+        # input_fn, ModeKeys.EVAL)
 
+        estimator_spec = self._call_model_fn(features, labels, ModeKeys.EVAL,
+                                            config)
+        eval_metric_ops = _verify_and_create_loss_metric(
+            estimator_spec.eval_metric_ops, estimator_spec.loss)
+        eval_dict = _extract_metric_update_ops_no_update(eval_metric_ops)
+        # return (estimator_spec.scaffold, estimator_spec.evaluation_hooks,
+        #         input_hooks, update_op, eval_dict)
+
+        global_step_tensor = tf.compat.v1.train.get_global_step(
+            tf.compat.v1.get_default_graph())
+        # Call to warm_start has to be after model_fn is called.
+        self._maybe_warm_start(checkpoint_path)
+
+        if tf.compat.v1.GraphKeys.GLOBAL_STEP in eval_dict:
+          raise ValueError(
+              'Metric with name `global_step` is not allowed, because Estimator '
+              'already defines a default metric with the same name.')
+        eval_dict[tf.compat.v1.GraphKeys.GLOBAL_STEP] = global_step_tensor
+
+        all_hooks = list(input_hooks)
+        all_hooks.extend(hooks)
+        all_hooks.extend(list(estimator_spec.evaluation_hooks or []))
+        return eval_dict, all_hooks
+  def multi_evaluate(self,
+               features,
+               labels,
+               doUpdate,
+               input_hooks,
+               steps=None,
+               hooks=None,
+               checkpoint_path=None,
+               name=None):
+    _estimator_api_gauge.get_cell('evaluate').set(True)
+    with context.graph_mode():
+      hooks = _check_hooks_type(hooks)
+      hooks.extend(self._convert_eval_steps_to_hooks(steps))
+
+      # Check that model has been trained (if nothing has been set explicitly).
+      if not checkpoint_path:
+        latest_path = checkpoint_management.latest_checkpoint(self._model_dir)
+        if not latest_path:
+          tf.compat.v1.logging.info(
+              'Could not find trained model in model_dir: {}, running '
+              'initialization to evaluate.'.format(self._model_dir))
+        checkpoint_path = latest_path
+
+      def _evaluate():
+        # (scaffold, update_op, eval_dict, all_hooks) = (
+        #     self._evaluate_build_graph(input_fn, hooks, checkpoint_path))
+        tf.compat.v1.random.set_random_seed(self._config.tf_random_seed)
+        self._create_and_assert_global_step(tf.compat.v1.get_default_graph())
+        # #
+        all_hooks = list(input_hooks)
+        all_hooks.extend(hooks)
+        estimator_spec = self._call_model_fn(features, labels, ModeKeys.EVAL,
+                                            self.config)
+        eval_metric_ops = _verify_and_create_loss_metric(
+            estimator_spec.eval_metric_ops, estimator_spec.loss)
+
+        scaffold = estimator_spec.scaffold
+        evaluation_hooks = estimator_spec.evaluation_hooks
+
+        all_hooks.extend(list(evaluation_hooks or []))
+        if scaffold and scaffold.local_init_op:
+          # Ensure that eval step has been created before updating local init op.
+          evaluation._get_or_create_eval_step()  # pylint: disable=protected-access
+
+          scaffold = tf.compat.v1.train.Scaffold(
+              local_init_op=tf.group(
+                  scaffold.local_init_op,
+                  tf.compat.v1.train.Scaffold.default_local_init_op()),
+              copy_from_scaffold=scaffold)
+
+        
+        if(doUpdate):
+          update_op, eval_dict = _extract_metric_update_ops(eval_metric_ops)
+          # get eval step
+          eval_step = 0
+          graph = ops.get_default_graph()
+          eval_steps = graph.get_collection(ops.GraphKeys.EVAL_STEP)
+          if len(eval_steps) == 1:
+            eval_step = eval_steps[0]
+          elif len(eval_steps) > 1:
+            raise ValueError('Multiple tensors added to tf.GraphKeys.EVAL_STEP')
+          else:
+            eval_step = variable_scope.get_variable(
+                'eval_step',
+                shape=[],
+                dtype=dtypes.int64,
+                initializer=init_ops.zeros_initializer(),
+                trainable=False,
+                collections=[ops.GraphKeys.LOCAL_VARIABLES, ops.GraphKeys.EVAL_STEP])
+          # Prepare the run hooks.
+          all_hooks = list(all_hooks or [])
+
+          if update_op is not None:
+            if any(isinstance(h, _MultiStepStopAfterNEvalsHook) for h in all_hooks):
+              steps_per_run_variable = \
+                  basic_session_run_hooks.get_or_create_steps_per_run_variable()
+              update_eval_step = state_ops.assign_add(
+                  eval_step,
+                  math_ops.cast(steps_per_run_variable, dtype=eval_step.dtype),
+                  use_locking=True)
+            else:
+              update_eval_step = state_ops.assign_add(eval_step, 1, use_locking=True)
+
+            if isinstance(update_op, dict):
+              update_op['update_eval_step'] = update_eval_step
+            elif isinstance(update_op, (tuple, list)):
+              update_op = list(update_op) + [update_eval_step]
+            else:
+              update_op = [update_op, update_eval_step]
+
+            eval_step_value = _get_latest_eval_step_value(update_op)
+
+            for h in all_hooks:
+              if isinstance(h, (_StopAfterNEvalsHook, _MultiStepStopAfterNEvalsHook)):
+                h._set_evals_completed_tensor(eval_step_value)  # pylint: disable=protected-access
+          # final_ops_hook = basic_session_run_hooks.FinalOpsHook(eval_dict)
+          # all_hooks.append(final_ops_hook)   
+
+          global_step_tensor = tf.compat.v1.train.get_global_step(
+            tf.compat.v1.get_default_graph())
+          # Call to warm_start has to be after model_fn is called.
+          self._maybe_warm_start(checkpoint_path)
+          if tf.compat.v1.GraphKeys.GLOBAL_STEP in eval_dict:
+            raise ValueError(
+                'Metric with name `global_step` is not allowed, because Estimator '
+                'already defines a default metric with the same name.')
+          eval_dict[tf.compat.v1.GraphKeys.GLOBAL_STEP] = global_step_tensor
+
+
+          return scaffold, update_op, eval_dict, all_hooks
+
+        else:
+          eval_dict = _extract_metric_update_ops_no_update(eval_metric_ops)
+
+        
+        
+          global_step_tensor = tf.compat.v1.train.get_global_step(
+              tf.compat.v1.get_default_graph())
+          # Call to warm_start has to be after model_fn is called.
+          self._maybe_warm_start(checkpoint_path)
+          if tf.compat.v1.GraphKeys.GLOBAL_STEP in eval_dict:
+            raise ValueError(
+                'Metric with name `global_step` is not allowed, because Estimator '
+                'already defines a default metric with the same name.')
+          eval_dict[tf.compat.v1.GraphKeys.GLOBAL_STEP] = global_step_tensor
+
+          return eval_dict, all_hooks
+      with tf.Graph().as_default():
+          return _evaluate()
   def _convert_eval_steps_to_hooks(self, steps):
     """Create hooks to run correct number of steps in evaluation.
 
