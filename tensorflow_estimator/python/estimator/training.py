@@ -471,7 +471,13 @@ def train_and_evaluate(estimator, train_spec, eval_spec):
         '(with task id 0).  Given task id {}'.format(config.task_id))
 
   return executor.run()
+@estimator_export('estimator.evaluate_no_train')
+def evaluate_no_train(estimator, train_spec, eval_spec):
+  _assert_eval_spec(eval_spec)  # fail fast if eval_spec is invalid.
 
+  executor = _TrainingExecutor(
+      estimator=estimator, train_spec=train_spec, eval_spec=eval_spec)
+  return executor.evaluate_without_train()
 
 class _StopAtSecsHook(session_run_hook.SessionRunHook):
   """Stops given secs after begin is called."""
@@ -868,7 +874,152 @@ class _TrainingExecutor(object):
           'it.')
 
     return (eval_result, should_early_stop)
+  def evaluate_without_train(self):
+    _assert_eval_spec(self._eval_spec)  # fail fast if eval_spec is invalid.
+    config = self._estimator.config
+    task_str = config.task_type
+    if(task_str == 'ps'):
+      server = server_lib.Server(
+        config.cluster_spec,
+        job_name=config.task_type,
+        task_index=config.task_id,
+        config=session_config,
+        start=False,
+        protocol=config.protocol)
+      server.start()
+    elif(task_str == 'worker'):
+      if(config.task_id == 0)
+        server_evaluator = tf.train.Server(cluster,job_name='worker',task_index=0)
+            features, labels, input_hooks = self._estimator._get_features_and_labels_from_input_fn(
+          self._eval_spec.input_fn, ModeKeys.EVAL)
+        results_ops = {}
+        with tf.device(tf.train.replica_device_setter(
+          worker_device="/job:worker/task:%d" % config.task_id,
+          cluster=config.cluster_spec)):
+          eval_dict_0, all_hooks = self._estimator.evaluate_without_train_build_graph(features=features, labels=labels, input_hooks=input_hooks, 
+          steps=self._eval_spec.steps,name=self._eval_spec.name,checkpoint_path=latest_ckpt_path,hooks=self._eval_spec.hooks)
+          results_array.append(eval_dict_0)
+        eval_num = config.num_worker_replicas
+        for i in range(eval_num):
+            if(i > 0):
+              with tf.device(tf.train.replica_device_setter(
+                worker_device="/job:worker/task:%d" % i,
+                cluster=config.cluster_spec)):
+                eval_dict_i, all_hooks = self._estimator.evaluate_without_train_build_graph(features=features, labels=labels, input_hooks=input_hooks, 
+                steps=self._eval_spec.steps,name=self._eval_spec.name,checkpoint_path=latest_ckpt_path,hooks=self._eval_spec.hooks)
+              results_array.append(eval_dict_i)
 
+        for key in eval_dict_0.keys():
+          sum = eval_dict_0[key]
+          for res in results_array:
+            sum += res[key]
+          results_ops[key] = sum / eval_num
+        final_ops = list(results_ops.values())
+         as monitor_session:
+          while not monitor_session.should_stop():
+            monitor_session.run(final_ops)
+    else:
+       raise ValueError(
+          'Internal error: `Estimator.evaluate_without_train` only have ps and evaluator')
+  def run_multi_evaluator_with_train(self):
+    """
+    Args:
+      estimator: An `Estimator` instance to train and evaluate.
+      eval_spec: A `EvalSpec` instance to specify the evaluation and export
+        specification.
+
+    Returns:
+      A tuple of the result of the `evaluate` call to the `Estimator` and the
+      export results using the specified `Exporter`s.
+      Currently, the return value is undefined for distributed training mode.
+
+    Raises:
+      ValueError: if environment variable `TF_CONFIG` is incorrectly set.
+    """
+    _assert_eval_spec(self._eval_spec)  # fail fast if eval_spec is invalid.
+    config = self._estimator.config
+    # if (config.task_type == run_config_lib.TaskType.EVALUATOR and
+    #     config.task_id > 0):
+    #   raise ValueError(
+    #       'For distributed training, there can only be one `evaluator` task '
+    #       '(with task id 0).  Given task id {}'.format(config.task_id))
+    task_str = config.task_type
+    
+
+    features, labels, input_hooks = self._estimator._get_features_and_labels_from_input_fn(
+          self._eval_spec.input_fn, ModeKeys.EVAL)
+    total_hooks = []
+    result_dict = {}
+    if(task_str == 'evaluator' and config.task_id == 0):
+      with tf.device('/evaluator/task:0'):
+        scaffold, update_op, eval_dict_0, all_hooks = self._estimator.multi_evaluate(features,labels,input_hooks,self._eval_spec.steps,name=self._eval_spec.name,checkpoint_path=latest_ckpt_path,hooks=self._eval_spec.hooks)
+        total_hooks.extend(list(all_hooks or []))
+        session_creator = monitored_session.ChiefSessionCreator(
+          scaffold=scaffold,
+          checkpoint_filename_with_path=checkpoint_path,
+          master=self._estimator._config.evaluation_master,
+        config=config)
+        final_ops_hook_0 = basic_session_run_hooks.FinalOpsHook(eval_dict_0)
+        total_hooks.append(final_ops_hook_0)
+      with tf.device('/evaluator/task:1'):
+        _, eval_dict_1, all_hooks = self._estimator.multi_evaluate(features,labels,input_hooks,self._eval_spec.steps,name=self._eval_spec.name,checkpoint_path=latest_ckpt_path,hooks=self._eval_spec.hooks)
+        total_hooks.extend(list(all_hooks or []))
+        final_ops_hook_1 = basic_session_run_hooks.FinalOpsHook(eval_dict_1)
+        total_hooks.append(final_ops_hook_1)
+      with tf.device('/evaluator/task:2'):
+        _, eval_dict_2, all_hooks = self._estimator.multi_evaluate(features,labels,input_hooks,self._eval_spec.steps,name=self._eval_spec.name,checkpoint_path=latest_ckpt_path,hooks=self._eval_spec.hooks)
+        total_hooks.extend(list(all_hooks or []))
+        final_ops_hook_1 = basic_session_run_hooks.FinalOpsHook(eval_dict_2)
+        total_hooks.append(final_ops_hook_2)
+    
+    with monitored_session.MonitoredSession(
+      session_creator=session_creator, hooks=total_hooks) as session:
+    if update_op is not None:
+      while not session.should_stop():
+        session.run(update_op, feed_dict)
+    else:
+      """Creates, starts, and returns a server_lib.Server."""
+      if (not config.cluster_spec or not config.task_type or
+          config.task_id is None):
+        raise RuntimeError('Could not start server; be sure to specify '
+                          'cluster_spec, task_type, and task in '
+                          'RunConfig or set the TF_CONFIG environment variable.')
+
+      if not config.master:
+        jobs = config.cluster_spec.jobs
+        if (len(jobs) == 1 and
+            len(config.cluster_spec.job_tasks(jobs[0])) == 1 and
+            config.task_type in _TRAINER_JOBS):
+          # For distributed training, config.master is empty if and only if it has
+          # a single node in the cluster spec. In this case, we should not start
+          # the server.
+          tf.compat.v1.logging.info(
+              'Skip starting Tensorflow server as there is only one '
+              'node in the cluster.')
+          return
+        else:
+          raise RuntimeError(
+              'Could not start server; be sure to specify master in '
+              'RunConfig or set the TF_CONFIG environment variable.')
+
+      tf.compat.v1.logging.info('Start Tensorflow server.')
+
+      if config.session_config is None:
+        session_config = tf.compat.v1.ConfigProto(log_device_placement=False)
+      else:
+        session_config = tf.compat.v1.ConfigProto(
+            log_device_placement=False,
+            gpu_options=config.session_config.gpu_options)
+
+      server = server_lib.Server(
+          config.cluster_spec,
+          job_name=config.task_type,
+          task_index=config.task_id,
+          config=session_config,
+          start=False,
+          protocol=config.protocol)
+      server.start()
+      server.join()
   class _Evaluator(object):
     """A helper class to call `Estimator.evaluate` and export model."""
 
