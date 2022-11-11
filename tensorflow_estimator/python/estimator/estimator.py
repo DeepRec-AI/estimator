@@ -880,7 +880,8 @@ class Estimator(object):
           gfile.MakeDirs(dest_path)
           gfile.Copy(source, dest_absolute)
 
-      gfile.Rename(temp_export_dir, export_dir)
+      # '/' is needed when rename a oss directory.
+      gfile.Rename(temp_export_dir + '/', export_dir)
       return export_dir
 
   def _add_meta_graph_for_mode(self,
