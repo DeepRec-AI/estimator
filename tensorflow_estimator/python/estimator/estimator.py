@@ -936,6 +936,14 @@ class Estimator(object):
           mode=mode,
           config=self.config)
 
+      try:
+        from tensorflow.python.graph_optimizer import sample_awared_graph_compression
+        if sample_awared_graph_compression.get_sample_awared_graph():
+          sample_awared_graph_compression.get_sample_awared_graph().graph_transform()
+          logging.info("Enable Sample-awared Graph Compression.")
+      except ImportError:
+        logging.warning("Import 'tensorflow.python.graph_optimizer' error.")
+
       export_outputs = export_lib.export_outputs_for_mode(
           mode=estimator_spec.mode,
           serving_export_outputs=estimator_spec.export_outputs,
