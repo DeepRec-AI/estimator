@@ -312,7 +312,9 @@ def _validate_properties(run_config):
                     ' one argument "op".')
 
   _validate('protocol',
-            lambda protocol: protocol in (None, "grpc", "grpc+verbs", "grpc++", "star_server", "star_server_v2"),
+            lambda protocol: protocol in (None, "grpc", "grpc+verbs", "grpc++",
+                                          "star_server", "star_server_v2",
+                                          "elastic-grpc"),
             message='protocol should be grpc, grpc+verbs, grpc++, star_server, star_server_v2')
 
 
