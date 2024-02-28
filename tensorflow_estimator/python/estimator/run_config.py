@@ -315,7 +315,8 @@ def _validate_properties(run_config):
             lambda protocol: protocol in (None, "grpc", "grpc+verbs", "grpc++",
                                           "star_server", "star_server_v2",
                                           "elastic-grpc"),
-            message='protocol should be grpc, grpc+verbs, grpc++, star_server, star_server_v2')
+            message='protocol should be grpc, grpc+verbs, grpc++, star_server,'
+                    ' star_server_v2, elastic-grpc.')
 
 
 def get_default_session_config():
